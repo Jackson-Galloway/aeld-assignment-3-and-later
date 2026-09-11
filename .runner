@@ -1,0 +1,11 @@
+﻿{
+  "agentId": 22,
+  "agentName": "buildroot-vm",
+  "poolId": 1,
+  "poolName": "Default",
+  "serverUrl": "https://pipelinesghubeus13.actions.githubusercontent.com/GE9TW0iHcJ5gE1URZ14KeJ2hikBrcjiLLVv3pt1G81FtHAatnO/",
+  "gitHubUrl": "https://github.com/Jackson-Galloway/aeld-assignment-3-and-later",
+  "workFolder": "_work",
+  "useV2Flow": true,
+  "serverUrlV2": "https://broker.actions.githubusercontent.com/"
+}

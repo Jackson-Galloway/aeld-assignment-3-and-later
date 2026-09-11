@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # finder.sh - counts files and lines matching a search string in a directory tree
 
 if [ $# -lt 2 ]; then
