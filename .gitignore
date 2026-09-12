@@ -1,6 +1,7 @@
 *.o
 writer
 server/aesdsocket
+server/valgrind-out.txt
 Test_*_Runner.c
 build/
 crosstool-ng
