@@ -1,5 +1,6 @@
 *.o
 writer
+server/aesdsocket
 Test_*_Runner.c
 build/
 crosstool-ng
