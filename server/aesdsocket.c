@@ -15,8 +15,16 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
 #define PORT 9000
+#if USE_AESD_CHAR_DEVICE
+#define DATAFILE "/dev/aesdchar"
+#else
 #define DATAFILE "/var/tmp/aesdsocketdata"
+#endif
 #define BACKLOG 10
 #define RECV_CHUNK 1024
 #define TIMESTAMP_PERIOD_SECONDS 10
@@ -197,6 +205,7 @@ static void *connection_thread(void *arg)
     return NULL;
 }
 
+#if !USE_AESD_CHAR_DEVICE
 static void *timestamp_thread(void *arg)
 {
     (void)arg;
@@ -229,6 +238,7 @@ static void *timestamp_thread(void *arg)
     }
     return NULL;
 }
+#endif
 
 // Joins and frees any thread_node whose thread has finished.
 static void reap_completed_threads(void)
@@ -349,6 +359,7 @@ int main(int argc, char *argv[])
         return -1;
     }
 
+#if !USE_AESD_CHAR_DEVICE
     pthread_t timer_tid;
     if (pthread_create(&timer_tid, NULL, timestamp_thread, NULL) != 0) {
         syslog(LOG_ERR, "failed to create timestamp thread: %s", strerror(errno));
@@ -356,6 +367,7 @@ int main(int argc, char *argv[])
         closelog();
         return -1;
     }
+#endif
 
     while (!exit_requested) {
         reap_completed_threads();
@@ -394,11 +406,15 @@ int main(int argc, char *argv[])
     syslog(LOG_INFO, "Caught signal, exiting");
 
     shutdown_all_threads();
+#if !USE_AESD_CHAR_DEVICE
     pthread_join(timer_tid, NULL);
+#endif
 
     close(listen_fd);
     listen_fd = -1;
+#if !USE_AESD_CHAR_DEVICE
     remove(DATAFILE);
+#endif
     closelog();
     return 0;
 }
