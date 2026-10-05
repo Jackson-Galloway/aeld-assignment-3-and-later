@@ -12,11 +12,16 @@
 #include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #ifndef USE_AESD_CHAR_DEVICE
 #define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#if USE_AESD_CHAR_DEVICE
+#include "../aesd-char-driver/aesd_ioctl.h"
 #endif
 
 #define PORT 9000
@@ -101,13 +106,10 @@ static int append_packet_to_file(const char *data, size_t len)
     return 1;
 }
 
-// Caller must hold file_mutex.
-static int send_file_contents(int fd_out)
+// Caller must hold file_mutex. Sends from fd's current file position
+// through EOF, without touching the position beforehand.
+static int send_fd_contents(int fd, int fd_out)
 {
-    int fd = open(DATAFILE, O_RDONLY);
-    if (fd == -1) {
-        return 0;
-    }
     char buf[RECV_CHUNK];
     ssize_t n;
     while ((n = read(fd, buf, sizeof(buf))) > 0) {
@@ -118,14 +120,91 @@ static int send_file_contents(int fd_out)
                 if (errno == EINTR) {
                     continue;
                 }
-                close(fd);
                 return 0;
             }
             sent += s;
         }
     }
-    close(fd);
     return (n == 0) ? 1 : 0;
+}
+
+// Caller must hold file_mutex.
+static int send_file_contents(int fd_out)
+{
+    int fd = open(DATAFILE, O_RDONLY);
+    if (fd == -1) {
+        return 0;
+    }
+    int ok = send_fd_contents(fd, fd_out);
+    close(fd);
+    return ok;
+}
+
+#if USE_AESD_CHAR_DEVICE
+#define SEEKTO_CMD_PREFIX "AESDCHAR_IOCSEEKTO:"
+
+// Caller must hold file_mutex. Checks whether packet is an
+// "AESDCHAR_IOCSEEKTO:X,Y" command; if so, issues the ioctl and sends the
+// device's contents from the resulting file position back over fd_out,
+// using the same fd for both so the seek set by the ioctl is honored.
+// Returns 1 if packet was a seekto command that was handled successfully,
+// -1 if it was a seekto command that failed, or 0 if packet was not a
+// seekto command (the caller should fall back to treating it as plain
+// write data).
+static int try_handle_seekto_command(const char *packet, size_t packet_len, int fd_out)
+{
+    char cmdbuf[64];
+    struct aesd_seekto seekto;
+    unsigned int write_cmd, write_cmd_offset;
+    int fd;
+    int ok;
+
+    if (packet_len < strlen(SEEKTO_CMD_PREFIX) || packet_len >= sizeof(cmdbuf)) {
+        return 0;
+    }
+    if (strncmp(packet, SEEKTO_CMD_PREFIX, strlen(SEEKTO_CMD_PREFIX)) != 0) {
+        return 0;
+    }
+
+    memcpy(cmdbuf, packet, packet_len);
+    cmdbuf[packet_len] = '\0';
+    if (sscanf(cmdbuf + strlen(SEEKTO_CMD_PREFIX), "%u,%u", &write_cmd, &write_cmd_offset) != 2) {
+        return 0;
+    }
+    seekto.write_cmd = write_cmd;
+    seekto.write_cmd_offset = write_cmd_offset;
+
+    fd = open(DATAFILE, O_RDWR);
+    if (fd == -1) {
+        syslog(LOG_ERR, "failed opening %s for seekto ioctl: %s", DATAFILE, strerror(errno));
+        return -1;
+    }
+
+    if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto) != 0) {
+        syslog(LOG_ERR, "AESDCHAR_IOCSEEKTO ioctl failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    ok = send_fd_contents(fd, fd_out);
+    close(fd);
+    return ok ? 1 : -1;
+}
+#endif
+
+// Caller must hold file_mutex. Returns 1 on success, 0 on failure.
+static int process_received_packet(const char *packet, size_t packet_len, int fd_out)
+{
+#if USE_AESD_CHAR_DEVICE
+    int seekto_result = try_handle_seekto_command(packet, packet_len, fd_out);
+    if (seekto_result != 0) {
+        return seekto_result == 1;
+    }
+#endif
+    if (!append_packet_to_file(packet, packet_len)) {
+        return 0;
+    }
+    return send_file_contents(fd_out);
 }
 
 static void handle_connection(int fd)
@@ -161,15 +240,11 @@ static void handle_connection(int fd)
                     packet_cap = 0;
                 } else {
                     pthread_mutex_lock(&file_mutex);
-                    int write_ok = append_packet_to_file(packet, packet_len);
-                    int send_ok = write_ok ? send_file_contents(fd) : 0;
+                    int ok = process_received_packet(packet, packet_len, fd);
                     pthread_mutex_unlock(&file_mutex);
 
-                    if (!write_ok) {
-                        syslog(LOG_ERR, "failed writing to %s: %s", DATAFILE, strerror(errno));
-                        connection_error = 1;
-                    } else if (!send_ok) {
-                        syslog(LOG_ERR, "failed sending %s to client: %s", DATAFILE, strerror(errno));
+                    if (!ok) {
+                        syslog(LOG_ERR, "failed processing packet for %s", DATAFILE);
                         connection_error = 1;
                     }
                     free(packet);
